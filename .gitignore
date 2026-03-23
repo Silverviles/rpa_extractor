@@ -1,0 +1,41 @@
+# Rust build and dependency files
+/target/
+**/target/
+Cargo.lock
+
+# IDE and editor files
+.idea/
+*.iml
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# By-products
+*.rs.bk
+
+# Custom project files
+.claude
+
+# VSCode
+.vscode/
+
+# Backup files
+*~
+*.bak
+
+# Python virtualenv (if any)
+.venv/
+venv/
+
+# Misc
+*.tmp
+*.temp

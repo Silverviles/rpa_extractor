@@ -1,0 +1,3 @@
+[workspace]
+members = ["rpa-lib", "rpa-editor"]
+resolver = "2"

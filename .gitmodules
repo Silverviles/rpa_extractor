@@ -1,0 +1,3 @@
+[submodule "vendor/unrpyc"]
+	path = vendor/unrpyc
+	url = https://github.com/CensoredUsername/unrpyc.git
