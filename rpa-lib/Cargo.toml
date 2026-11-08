@@ -6,4 +6,3 @@ edition = "2021"
 [dependencies]
 serde-pickle = "1.2"
 flate2 = "1.0"
-thiserror = "2"

@@ -5,10 +5,9 @@ edition = "2021"
 
 [dependencies]
 rpa-lib = { path = "../rpa-lib" }
-gtk = { package = "gtk4", version = "0.9", features = ["v4_12"] }
-gdk = { package = "gdk4", version = "0.9" }
-gdk-pixbuf = { package = "gdk-pixbuf", version = "0.20" }
-gio = { version = "0.20" }
-glib = { version = "0.20" }
+gtk = { package = "gtk4", version = "0.11.5", features = ["v4_12"] }
+gdk = { package = "gdk4", version = "0.11.5" }
+gdk-pixbuf = { package = "gdk-pixbuf", version = "0.22.0" }
+gio = { version = "0.22.10" }
+glib = { version = "0.22.10" }
 async-channel = "2"
-pyo3 = { version = "0.23", features = ["auto-initialize"] }

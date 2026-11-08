@@ -8,7 +8,6 @@ pub enum RpaError {
     DecompressionFailed(String),
     PickleFailed(String),
     EntryNotFound(String),
-    PackError(String),
 }
 
 impl fmt::Display for RpaError {
@@ -20,7 +19,6 @@ impl fmt::Display for RpaError {
             RpaError::DecompressionFailed(msg) => write!(f, "Decompression failed: {}", msg),
             RpaError::PickleFailed(msg) => write!(f, "Pickle deserialization failed: {}", msg),
             RpaError::EntryNotFound(name) => write!(f, "Entry not found: {}", name),
-            RpaError::PackError(msg) => write!(f, "Pack error: {}", msg),
         }
     }
 }

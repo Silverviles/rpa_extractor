@@ -1,14 +1,11 @@
 use crate::drag_drop;
-use crate::edit_state::{EditState, FileStatus};
 use crate::extraction::{self, ExtractionProgress};
 use crate::file_tree::{self, FileNode};
-use crate::packing::{self, PackingProgress};
 use crate::preview::{self, PreviewType};
-use crate::search;
 
 use glib::clone;
 use gtk::prelude::*;
-use rpa_lib::{RpaArchive, RpaVersion};
+use rpa_lib::RpaArchive;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -17,8 +14,6 @@ use std::sync::Arc;
 
 pub struct AppState {
     pub archive: Option<Arc<RpaArchive>>,
-    pub edit_state: EditState,
-    pub current_file: Option<String>,
     pub archive_path: Option<PathBuf>,
 }
 
@@ -26,8 +21,6 @@ impl AppState {
     pub fn new() -> Self {
         Self {
             archive: None,
-            edit_state: EditState::new(),
-            current_file: None,
             archive_path: None,
         }
     }
@@ -50,20 +43,6 @@ pub fn build_window(app: &gtk::Application) -> gtk::ApplicationWindow {
         .label("Open")
         .tooltip_text("Open RPA archive (Ctrl+O)")
         .build();
-    let new_button = gtk::Button::builder()
-        .label("New")
-        .tooltip_text("Create new archive (Ctrl+N)")
-        .build();
-    let save_button = gtk::Button::builder()
-        .label("Save")
-        .tooltip_text("Save archive (Ctrl+S)")
-        .sensitive(false)
-        .build();
-    let save_as_button = gtk::Button::builder()
-        .label("Save As")
-        .tooltip_text("Save archive as… (Ctrl+Shift+S)")
-        .sensitive(false)
-        .build();
     let extract_all_button = gtk::Button::builder()
         .label("Extract All")
         .sensitive(false)
@@ -74,33 +53,12 @@ pub fn build_window(app: &gtk::Application) -> gtk::ApplicationWindow {
         .build();
 
     header_bar.pack_start(&open_button);
-    header_bar.pack_start(&new_button);
     header_bar.pack_end(&extract_selected_button);
     header_bar.pack_end(&extract_all_button);
-    header_bar.pack_end(&save_as_button);
-    header_bar.pack_end(&save_button);
 
     window.set_titlebar(Some(&header_bar));
 
-    // Search bar
-    let (search_bar, search_entry) = search::build_search_bar();
-    let search_toggle = gtk::ToggleButton::builder()
-        .icon_name("edit-find-symbolic")
-        .tooltip_text("Search (Ctrl+F)")
-        .build();
-    header_bar.pack_end(&search_toggle);
-
-    search_toggle.connect_toggled(clone!(
-        #[weak]
-        search_bar,
-        move |btn| {
-            search_bar.set_search_mode(btn.is_active());
-        }
-    ));
-
-    // Main content area
     let main_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
-    main_box.append(&search_bar);
 
     // Paned: left = tree, right = preview
     let paned = gtk::Paned::builder()
@@ -144,31 +102,10 @@ pub fn build_window(app: &gtk::Application) -> gtk::ApplicationWindow {
 
         let label = expander.child().and_downcast::<gtk::Label>().unwrap();
         let name = node.name();
-
-        // Add status indicator
-        let display = match node.file_status() {
-            FileStatus::Added => format!("+ {}", name),
-            FileStatus::Modified => format!("* {}", name),
-            FileStatus::Removed => format!("- {}", name),
-            FileStatus::Original => {
-                if node.is_directory() {
-                    format!("{}/", name)
-                } else {
-                    name.clone()
-                }
-            }
-        };
-        label.set_text(&display);
-
-        // Color by status
-        label.remove_css_class("success");
-        label.remove_css_class("warning");
-        label.remove_css_class("error");
-        match node.file_status() {
-            FileStatus::Added => label.add_css_class("success"),
-            FileStatus::Modified => label.add_css_class("warning"),
-            FileStatus::Removed => label.add_css_class("error"),
-            _ => {}
+        if node.is_directory() {
+            label.set_text(&format!("{}/", name));
+        } else {
+            label.set_text(&name);
         }
     });
     let name_column = gtk::ColumnViewColumn::builder()
@@ -265,23 +202,14 @@ pub fn build_window(app: &gtk::Application) -> gtk::ApplicationWindow {
         .hexpand(true)
         .build();
 
-    let changes_label = gtk::Label::builder()
-        .label("")
-        .xalign(1.0)
-        .build();
-
     bottom_box.append(&progress_bar);
     bottom_box.append(&status_label);
-    bottom_box.append(&changes_label);
 
     main_box.append(&bottom_box);
     window.set_child(Some(&main_box));
 
     // --- Context menu for tree ---
     let context_menu = gio::Menu::new();
-    context_menu.append(Some("Add Files…"), Some("win.add-files"));
-    context_menu.append(Some("Replace…"), Some("win.replace-file"));
-    context_menu.append(Some("Remove"), Some("win.remove-files"));
     context_menu.append(Some("Extract…"), Some("win.extract-selected"));
 
     let popover_menu = gtk::PopoverMenu::from_model(Some(&context_menu));
@@ -304,27 +232,18 @@ pub fn build_window(app: &gtk::Application) -> gtk::ApplicationWindow {
     // --- Helper: refresh tree from state ---
     let tree_store_ref = tree_store.clone();
     let state_for_refresh = state.clone();
-    let changes_label_ref = changes_label.clone();
-    let save_button_ref = save_button.clone();
-    let save_as_button_ref = save_as_button.clone();
     let extract_all_button_ref = extract_all_button.clone();
+    let extract_selected_button_ref = extract_selected_button.clone();
     let window_ref = window.clone();
 
     let refresh_tree = Rc::new(move || {
         let st = state_for_refresh.borrow();
-        let mut files: HashMap<String, (u64, FileStatus)> = HashMap::new();
+        let mut files: HashMap<String, u64> = HashMap::new();
 
         if let Some(archive) = &st.archive {
             for (name, entry) in archive.entries() {
-                let status = st.edit_state.status_of(name);
-                files.insert(name.clone(), (entry.length, status));
+                files.insert(name.clone(), entry.length);
             }
-        }
-
-        // Add new files from edit state
-        for (name, path) in &st.edit_state.added {
-            let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
-            files.insert(name.clone(), (size, FileStatus::Added));
         }
 
         let new_store = file_tree::build_tree(&files);
@@ -336,34 +255,15 @@ pub fn build_window(app: &gtk::Application) -> gtk::ApplicationWindow {
         }
 
         // Update UI state
-        let has_archive = st.archive.is_some() || st.edit_state.is_modified();
-        let has_files = !files.is_empty();
-        save_button_ref.set_sensitive(st.edit_state.is_modified());
-        save_as_button_ref.set_sensitive(has_archive || has_files);
-        extract_all_button_ref.set_sensitive(has_files && st.archive.is_some());
+        let has_archive = st.archive.is_some();
+        extract_all_button_ref.set_sensitive(has_archive);
+        extract_selected_button_ref.set_sensitive(has_archive);
 
-        let count = st.edit_state.pending_changes_count();
-        if count > 0 {
-            changes_label_ref.set_text(&format!("{} pending change(s)", count));
-            window_ref.set_title(Some(&format!(
-                "RPA Editor - {}*",
-                st.archive_path
-                    .as_ref()
-                    .and_then(|p| p.file_name())
-                    .map(|n| n.to_string_lossy().to_string())
-                    .unwrap_or_else(|| "New Archive".to_string())
-            )));
-        } else {
-            changes_label_ref.set_text("");
-            window_ref.set_title(Some(&format!(
-                "RPA Editor - {}",
-                st.archive_path
-                    .as_ref()
-                    .and_then(|p| p.file_name())
-                    .map(|n| n.to_string_lossy().to_string())
-                    .unwrap_or_else(|| "RPA Editor".to_string())
-            )));
-        }
+        let title = match st.archive_path.as_ref().and_then(|p| p.file_name()) {
+            Some(name) => format!("RPA Editor - {}", name.to_string_lossy()),
+            None => "RPA Editor".to_string(),
+        };
+        window_ref.set_title(Some(&title));
     });
 
     // --- Selection change → preview ---
@@ -396,26 +296,19 @@ pub fn build_window(app: &gtk::Application) -> gtk::ApplicationWindow {
 
                     let filename = node.full_path();
 
-                    // Borrow state to extract data, then drop before updating UI
-                    // (set_text triggers connect_changed which also borrows state)
                     let data = {
                         let st = state_for_selection.borrow();
-                        if let Some(text) = st.edit_state.text_edits.get(&filename) {
-                            Some(text.as_bytes().to_vec())
-                        } else if let Some(path) = st.edit_state.replaced.get(&filename) {
-                            std::fs::read(path).ok()
-                        } else if let Some(path) = st.edit_state.added.get(&filename) {
-                            std::fs::read(path).ok()
-                        } else if let Some(archive) = &st.archive {
-                            archive.extract(&filename).ok()
-                        } else {
-                            None
-                        }
+                        st.archive
+                            .as_ref()
+                            .and_then(|archive| archive.extract(&filename).ok())
                     };
 
                     if let Some(data) = data {
-                        info_label_ref
-                            .set_text(&format!("{} — {}", filename.replace('\0', ""), file_tree::format_size(data.len() as u64)));
+                        info_label_ref.set_text(&format!(
+                            "{} — {}",
+                            filename.replace('\0', ""),
+                            file_tree::format_size(data.len() as u64)
+                        ));
 
                         match preview::detect_preview_type(&filename) {
                             PreviewType::Image => {
@@ -438,25 +331,14 @@ pub fn build_window(app: &gtk::Application) -> gtk::ApplicationWindow {
                                 }
                             }
                             PreviewType::Text => {
-                                let text =
-                                    String::from_utf8_lossy(&data).replace('\0', "");
+                                let text = String::from_utf8_lossy(&data).replace('\0', "");
                                 text_view_ref.buffer().set_text(&text);
-                                text_view_ref.set_editable(true);
-                                preview_stack.set_visible_child_name("text");
-                            }
-                            PreviewType::DecompiledRpyc => {
-                                let decompiled = crate::rpyc_compiler::decompile_rpyc(&data);
-                                text_view_ref.buffer().set_text(&decompiled);
-                                text_view_ref.set_editable(false);
                                 preview_stack.set_visible_child_name("text");
                             }
                             PreviewType::Hex => {
                                 let hex = preview::format_hex_dump(&data, 512);
                                 hex_view.buffer().set_text(&hex);
                                 preview_stack.set_visible_child_name("hex");
-                            }
-                            PreviewType::None => {
-                                preview_stack.set_visible_child_name("none");
                             }
                         }
                     } else {
@@ -467,47 +349,16 @@ pub fn build_window(app: &gtk::Application) -> gtk::ApplicationWindow {
         }
     ));
 
-    // --- Track current file for text edits ---
-    let state_for_text = state.clone();
-    let refresh_tree_for_text = refresh_tree.clone();
-
-    text_view.buffer().connect_changed(clone!(
-        #[weak]
-        selection_model,
-        move |buffer| {
-            let selection = selection_model.selection();
-            if selection.is_empty() {
-                return;
-            }
-            let pos = selection.nth(0);
-            if let Some(tree_row) = selection_model
-                .item(pos)
-                .and_then(|i| i.downcast::<gtk::TreeListRow>().ok())
-            {
-                if let Some(node) = tree_row.item().and_then(|i| i.downcast::<FileNode>().ok()) {
-                    if !node.is_directory() && preview::is_text_file(&node.full_path()) {
-                        let (start, end) = buffer.bounds();
-                        let text = buffer.text(&start, &end, false).to_string();
-                        state_for_text
-                            .borrow_mut()
-                            .edit_state
-                            .edit_text(&node.full_path(), text);
-                        refresh_tree_for_text();
-                    }
-                }
-            }
-        }
-    ));
-
-    // --- Open button ---
+    // --- Open action ---
+    let open_action = gio::SimpleAction::new("open", None);
     let state_for_open = state.clone();
     let refresh_tree_for_open = refresh_tree.clone();
     let status_label_for_open = status_label.clone();
 
-    open_button.connect_clicked(clone!(
+    open_action.connect_activate(clone!(
         #[weak]
         window,
-        move |_| {
+        move |_, _| {
             let dialog = gtk::FileDialog::builder()
                 .title("Open RPA Archive")
                 .build();
@@ -531,7 +382,6 @@ pub fn build_window(app: &gtk::Application) -> gtk::ApplicationWindow {
                                 let mut st = state.borrow_mut();
                                 st.archive = Some(Arc::new(archive));
                                 st.archive_path = Some(path.clone());
-                                st.edit_state.clear();
                                 drop(st);
                                 status.set_text(&format!(
                                     "Opened: {}",
@@ -550,75 +400,8 @@ pub fn build_window(app: &gtk::Application) -> gtk::ApplicationWindow {
             });
         }
     ));
-
-    // --- New button ---
-    let state_for_new = state.clone();
-    let refresh_tree_for_new = refresh_tree.clone();
-    let status_label_for_new = status_label.clone();
-
-    new_button.connect_clicked(clone!(
-        #[weak]
-        window,
-        move |_| {
-            let mut st = state_for_new.borrow_mut();
-            st.archive = None;
-            st.archive_path = None;
-            st.edit_state.clear();
-            drop(st);
-            status_label_for_new.set_text("New archive — add files and Save As");
-            window.set_title(Some("RPA Editor - New Archive"));
-            refresh_tree_for_new();
-        }
-    ));
-
-    // --- Save As button ---
-    let state_for_save_as = state.clone();
-    let refresh_tree_for_save_as = refresh_tree.clone();
-    let status_label_for_save_as = status_label.clone();
-    let progress_bar_for_save_as = progress_bar.clone();
-
-    save_as_button.connect_clicked(clone!(
-        #[weak]
-        window,
-        move |_| {
-            let dialog = gtk::FileDialog::builder()
-                .title("Save RPA Archive As")
-                .build();
-
-            let state = state_for_save_as.clone();
-            let refresh = refresh_tree_for_save_as.clone();
-            let status = status_label_for_save_as.clone();
-            let progress = progress_bar_for_save_as.clone();
-
-            dialog.save(Some(&window), gio::Cancellable::NONE, move |result| {
-                if let Ok(file) = result {
-                    if let Some(path) = file.path() {
-                        do_save(state.clone(), path, status.clone(), progress.clone(), refresh.clone());
-                    }
-                }
-            });
-        }
-    ));
-
-    // --- Save button ---
-    let state_for_save = state.clone();
-    let refresh_tree_for_save = refresh_tree.clone();
-    let status_label_for_save = status_label.clone();
-    let progress_bar_for_save = progress_bar.clone();
-
-    save_button.connect_clicked(move |_| {
-        let st = state_for_save.borrow();
-        if let Some(path) = st.archive_path.clone() {
-            drop(st);
-            do_save(
-                state_for_save.clone(),
-                path,
-                status_label_for_save.clone(),
-                progress_bar_for_save.clone(),
-                refresh_tree_for_save.clone(),
-            );
-        }
-    });
+    window.add_action(&open_action);
+    open_button.set_action_name(Some("win.open"));
 
     // --- Extract All button ---
     let state_for_extract_all = state.clone();
@@ -653,117 +436,6 @@ pub fn build_window(app: &gtk::Application) -> gtk::ApplicationWindow {
             });
         }
     ));
-
-    // --- Add Files action ---
-    let add_action = gio::SimpleAction::new("add-files", None);
-    let state_for_add = state.clone();
-    let refresh_tree_for_add = refresh_tree.clone();
-
-    add_action.connect_activate(clone!(
-        #[weak]
-        window,
-        move |_, _| {
-            let dialog = gtk::FileDialog::builder()
-                .title("Add Files to Archive")
-                .build();
-
-            let state = state_for_add.clone();
-            let refresh = refresh_tree_for_add.clone();
-
-            dialog.open_multiple(Some(&window), gio::Cancellable::NONE, move |result| {
-                if let Ok(files) = result {
-                    let mut st = state.borrow_mut();
-                    for i in 0..files.n_items() {
-                        if let Some(file) = files.item(i).and_then(|f| f.downcast::<gio::File>().ok()) {
-                            if let Some(path) = file.path() {
-                                let name = path.file_name()
-                                    .map(|n| n.to_string_lossy().to_string())
-                                    .unwrap_or_else(|| "unknown".to_string());
-                                st.edit_state.add(name, path);
-                            }
-                        }
-                    }
-                    drop(st);
-                    refresh();
-                }
-            });
-        }
-    ));
-    window.add_action(&add_action);
-
-    // --- Remove action ---
-    let remove_action = gio::SimpleAction::new("remove-files", None);
-    let state_for_remove = state.clone();
-    let refresh_tree_for_remove = refresh_tree.clone();
-
-    remove_action.connect_activate(clone!(
-        #[weak]
-        selection_model,
-        move |_, _| {
-            let selection = selection_model.selection();
-            let mut st = state_for_remove.borrow_mut();
-            for i in 0..selection.size() {
-                let pos = selection.nth(i as u32);
-                if let Some(tree_row) = selection_model
-                    .item(pos)
-                    .and_then(|item| item.downcast::<gtk::TreeListRow>().ok())
-                {
-                    if let Some(node) = tree_row.item().and_then(|item| item.downcast::<FileNode>().ok()) {
-                        if !node.is_directory() {
-                            st.edit_state.remove(&node.full_path());
-                        }
-                    }
-                }
-            }
-            drop(st);
-            refresh_tree_for_remove();
-        }
-    ));
-    window.add_action(&remove_action);
-
-    // --- Replace action ---
-    let replace_action = gio::SimpleAction::new("replace-file", None);
-    let state_for_replace = state.clone();
-    let refresh_tree_for_replace = refresh_tree.clone();
-
-    replace_action.connect_activate(clone!(
-        #[weak]
-        window,
-        #[weak]
-        selection_model,
-        move |_, _| {
-            let selection = selection_model.selection();
-            if selection.is_empty() {
-                return;
-            }
-            let pos = selection.nth(0);
-            let filename = selection_model
-                .item(pos)
-                .and_then(|i| i.downcast::<gtk::TreeListRow>().ok())
-                .and_then(|r| r.item())
-                .and_then(|i| i.downcast::<FileNode>().ok())
-                .map(|n| n.full_path());
-
-            if let Some(filename) = filename {
-                let dialog = gtk::FileDialog::builder()
-                    .title("Replace File")
-                    .build();
-
-                let state = state_for_replace.clone();
-                let refresh = refresh_tree_for_replace.clone();
-
-                dialog.open(Some(&window), gio::Cancellable::NONE, move |result| {
-                    if let Ok(file) = result {
-                        if let Some(path) = file.path() {
-                            state.borrow_mut().edit_state.replace(&filename, path);
-                            refresh();
-                        }
-                    }
-                });
-            }
-        }
-    ));
-    window.add_action(&replace_action);
 
     // --- Extract Selected action ---
     let extract_action = gio::SimpleAction::new("extract-selected", None);
@@ -824,7 +496,7 @@ pub fn build_window(app: &gtk::Application) -> gtk::ApplicationWindow {
 
     extract_selected_button.set_action_name(Some("win.extract-selected"));
 
-    // --- Drag and drop ---
+    // --- Drag and drop: open .rpa archives ---
     let state_for_drop = state.clone();
     let refresh_tree_for_drop = refresh_tree.clone();
     let status_label_for_drop = status_label.clone();
@@ -836,13 +508,11 @@ pub fn build_window(app: &gtk::Application) -> gtk::ApplicationWindow {
             .unwrap_or_default();
 
         if ext == "rpa" {
-            // Open as archive
             match RpaArchive::open(&path) {
                 Ok(archive) => {
                     let mut st = state_for_drop.borrow_mut();
                     st.archive = Some(Arc::new(archive));
                     st.archive_path = Some(path.clone());
-                    st.edit_state.clear();
                     drop(st);
                     status_label_for_drop.set_text(&format!(
                         "Opened: {}",
@@ -857,21 +527,11 @@ pub fn build_window(app: &gtk::Application) -> gtk::ApplicationWindow {
                 }
             }
         } else {
-            // Add as file
-            let name = path
-                .file_name()
-                .map(|n| n.to_string_lossy().to_string())
-                .unwrap_or_else(|| "unknown".to_string());
-            state_for_drop.borrow_mut().edit_state.add(name, path);
-            refresh_tree_for_drop();
+            status_label_for_drop.set_text("Only .rpa archives can be opened");
         }
     });
 
     // --- Keyboard shortcuts ---
-    let ctrl = gdk::ModifierType::CONTROL_MASK;
-    let ctrl_shift = gdk::ModifierType::CONTROL_MASK | gdk::ModifierType::SHIFT_MASK;
-
-    // Ctrl+O
     let shortcut_ctrl_o = gtk::ShortcutController::new();
     shortcut_ctrl_o.add_shortcut(
         gtk::Shortcut::builder()
@@ -879,125 +539,9 @@ pub fn build_window(app: &gtk::Application) -> gtk::ApplicationWindow {
             .action(&gtk::NamedAction::new("win.open"))
             .build(),
     );
-
-    // Ctrl+F
-    let shortcut_ctrl_f = gtk::ShortcutController::new();
-    let search_toggle_ref = search_toggle.clone();
-    shortcut_ctrl_f.add_shortcut(
-        gtk::Shortcut::builder()
-            .trigger(&gtk::ShortcutTrigger::parse_string("<Ctrl>f").unwrap())
-            .action(&gtk::CallbackAction::new(move |_, _| {
-                search_toggle_ref.set_active(!search_toggle_ref.is_active());
-                glib::Propagation::Stop
-            }))
-            .build(),
-    );
-    window.add_controller(shortcut_ctrl_f);
-
-    // --- Search filtering ---
-    search_entry.connect_search_changed(clone!(
-        #[strong]
-        tree_list_model,
-        move |entry| {
-            let _query = entry.text().to_string();
-            // Note: full filtering with TreeListModel requires a FilterListModel wrapper.
-            // For now, the search entry is wired up — filtering implementation
-            // would use gtk::FilterListModel with a CustomFilter.
-        }
-    ));
-
-    // Apply CSS
-    let css_provider = gtk::CssProvider::new();
-    css_provider.load_from_string(
-        r#"
-        .success { color: #4caf50; }
-        .warning { color: #ff9800; }
-        .error { color: #f44336; text-decoration: line-through; }
-        "#,
-    );
-    gtk::style_context_add_provider_for_display(
-        &gdk::Display::default().unwrap(),
-        &css_provider,
-        gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
-    );
+    window.add_controller(shortcut_ctrl_o);
 
     window
-}
-
-fn do_save(
-    state: Rc<RefCell<AppState>>,
-    output_path: PathBuf,
-    status_label: gtk::Label,
-    progress_bar: gtk::ProgressBar,
-    refresh: Rc<dyn Fn()>,
-) {
-    let st = state.borrow();
-    let archive = st.archive.clone();
-    let edit_state_clone = EditState {
-        removed: st.edit_state.removed.clone(),
-        replaced: st.edit_state.replaced.clone(),
-        added: st.edit_state.added.clone(),
-        text_edits: st.edit_state.text_edits.clone(),
-        rpyc_recompile: st.edit_state.rpyc_recompile.clone(),
-    };
-    drop(st);
-
-    let (sender, receiver) = async_channel::bounded::<PackingProgress>(100);
-
-    progress_bar.set_visible(true);
-    progress_bar.set_fraction(0.0);
-    status_label.set_text("Packing…");
-
-    // Spawn background thread
-    let output_path_clone = output_path.clone();
-    std::thread::spawn(move || {
-        packing::pack_archive_background(archive, edit_state_clone, output_path_clone, sender);
-    });
-
-    // UI receiver
-    let state_for_done = state.clone();
-    glib::spawn_future_local(async move {
-        while let Ok(msg) = receiver.recv().await {
-            match msg {
-                PackingProgress::Started { total } => {
-                    status_label.set_text(&format!("Packing 0/{}", total));
-                }
-                PackingProgress::FileDone { index, filename } => {
-                    status_label.set_text(&format!("Packing: {}", filename));
-                    progress_bar.set_fraction((index + 1) as f64 / 100.0); // approximate
-                }
-                PackingProgress::RpycCompiling { filename } => {
-                    status_label.set_text(&format!("Compiling rpyc: {}", filename));
-                }
-                PackingProgress::RpycCompiled { filename } => {
-                    status_label.set_text(&format!("Compiled: {}", filename));
-                }
-                PackingProgress::RpycFailed { filename, reason } => {
-                    status_label.set_text(&format!("rpyc failed ({}): {}", filename, reason));
-                }
-                PackingProgress::Error(e) => {
-                    status_label.set_text(&format!("Error: {}", e));
-                    progress_bar.set_visible(false);
-                    return;
-                }
-                PackingProgress::Finished => {
-                    progress_bar.set_visible(false);
-                    status_label.set_text("Saved successfully");
-
-                    // Reload the archive
-                    if let Ok(new_archive) = RpaArchive::open(&output_path) {
-                        let mut st = state_for_done.borrow_mut();
-                        st.archive = Some(Arc::new(new_archive));
-                        st.archive_path = Some(output_path.clone());
-                        st.edit_state.clear();
-                        drop(st);
-                        refresh();
-                    }
-                    return;
-                }
-            }
-        }
-    });
 }
 
 fn do_extract(

@@ -1,4 +1,3 @@
-use crate::edit_state::FileStatus;
 use glib::subclass::prelude::*;
 use glib::Properties;
 use gtk::prelude::*;
@@ -20,8 +19,6 @@ mod imp {
         size: RefCell<u64>,
         #[property(get, set)]
         is_directory: RefCell<bool>,
-        #[property(get, set)]
-        status: RefCell<u32>, // 0=original, 1=added, 2=modified, 3=removed
         pub children: RefCell<Option<gio::ListStore>>,
     }
 
@@ -47,27 +44,7 @@ impl FileNode {
             .property("full-path", full_path)
             .property("size", size)
             .property("is-directory", is_directory)
-            .property("status", 0u32)
             .build()
-    }
-
-    pub fn set_file_status(&self, status: FileStatus) {
-        let val = match status {
-            FileStatus::Original => 0,
-            FileStatus::Added => 1,
-            FileStatus::Modified => 2,
-            FileStatus::Removed => 3,
-        };
-        self.set_status(val);
-    }
-
-    pub fn file_status(&self) -> FileStatus {
-        match self.status() {
-            1 => FileStatus::Added,
-            2 => FileStatus::Modified,
-            3 => FileStatus::Removed,
-            _ => FileStatus::Original,
-        }
     }
 
     pub fn children_store(&self) -> Option<gio::ListStore> {
@@ -81,7 +58,7 @@ impl FileNode {
 
 /// Intermediate structure for building the tree
 struct DirNode {
-    children_files: Vec<(String, u64, FileStatus)>, // (name, size, status)
+    children_files: Vec<(String, u64)>, // (name, size)
     children_dirs: HashMap<String, DirNode>,
 }
 
@@ -94,24 +71,20 @@ impl DirNode {
     }
 }
 
-/// Build a tree of FileNode objects from a flat list of filenames.
-pub fn build_tree(
-    files: &HashMap<String, (u64, FileStatus)>,
-) -> gio::ListStore {
+/// Build a tree of FileNode objects from a flat map of filenames to sizes.
+pub fn build_tree(files: &HashMap<String, u64>) -> gio::ListStore {
     let root_store = gio::ListStore::new::<FileNode>();
 
     // Build intermediate tree
     let mut root = DirNode::new();
-    for (path, (size, status)) in files {
+    for (path, size) in files {
         let parts: Vec<&str> = path.split('/').collect();
         let mut current = &mut root;
 
         for (i, part) in parts.iter().enumerate() {
             if i == parts.len() - 1 {
                 // File leaf
-                current
-                    .children_files
-                    .push((part.to_string(), *size, status.clone()));
+                current.children_files.push((part.to_string(), *size));
             } else {
                 // Directory
                 current = current
@@ -151,7 +124,7 @@ fn populate_store(store: &gio::ListStore, dir: &DirNode, prefix: &str) {
     let mut file_entries = dir.children_files.clone();
     file_entries.sort_by(|a, b| a.0.cmp(&b.0));
 
-    for (name, size, status) in &file_entries {
+    for (name, size) in &file_entries {
         let full_path = if prefix.is_empty() {
             name.clone()
         } else {
@@ -159,7 +132,6 @@ fn populate_store(store: &gio::ListStore, dir: &DirNode, prefix: &str) {
         };
 
         let node = FileNode::new(name, &full_path, *size, false);
-        node.set_file_status(status.clone());
         store.append(&node);
     }
 }

@@ -85,14 +85,6 @@ pub fn parse_header(reader: &mut impl Read) -> Result<RpaHeader, RpaError> {
     })
 }
 
-pub fn write_header(version: RpaVersion, index_offset: u64, key: u64) -> String {
-    match version {
-        RpaVersion::V2_0 => format!("RPA-2.0 {:016x}\n", index_offset),
-        RpaVersion::V3_0 => format!("RPA-3.0 {:016x} {:08x}\n", index_offset, key),
-        RpaVersion::V3_2 => format!("RPA-3.2 {:016x} {:08x}\n", index_offset, key),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -126,14 +118,5 @@ mod tests {
         assert_eq!(h.version, RpaVersion::V3_2);
         assert_eq!(h.index_offset, 0x12ab);
         assert_eq!(h.key, 0xdeadbeef ^ 0x12345678);
-    }
-
-    #[test]
-    fn test_write_header_roundtrip() {
-        let original = "RPA-3.0 00000000000012ab 42424242\n";
-        let mut cursor = Cursor::new(original.as_bytes());
-        let h = parse_header(&mut cursor).unwrap();
-        let written = write_header(h.version, h.index_offset, h.key);
-        assert_eq!(written, original);
     }
 }

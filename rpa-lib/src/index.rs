@@ -1,11 +1,9 @@
 use crate::error::RpaError;
 use crate::header::{RpaHeader, RpaVersion};
 use flate2::read::ZlibDecoder;
-use flate2::write::ZlibEncoder;
-use flate2::Compression;
 use serde_pickle::value::{HashableValue, Value};
-use std::collections::{BTreeMap, HashMap};
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::collections::HashMap;
+use std::io::{Read, Seek, SeekFrom};
 
 #[derive(Debug, Clone)]
 pub struct IndexEntry {
@@ -120,52 +118,4 @@ fn extract_int(value: &Value) -> Option<i64> {
         Value::Bool(b) => Some(if *b { 1 } else { 0 }),
         _ => None,
     }
-}
-
-pub fn serialize_index(
-    entries: &HashMap<String, IndexEntry>,
-    header: &RpaHeader,
-) -> Result<Vec<u8>, RpaError> {
-    let mut dict: BTreeMap<HashableValue, Value> = BTreeMap::new();
-
-    for (filename, entry) in entries {
-        let (stored_offset, stored_length) = match header.version {
-            RpaVersion::V2_0 => (entry.offset as i64, entry.length as i64),
-            RpaVersion::V3_0 | RpaVersion::V3_2 => {
-                let offset = (entry.offset ^ header.key) as i64;
-                let length = (entry.length ^ header.key) as i64;
-                (offset, length)
-            }
-        };
-
-        let tuple = match header.version {
-            RpaVersion::V2_0 => {
-                Value::Tuple(vec![Value::I64(stored_offset), Value::I64(stored_length)])
-            }
-            RpaVersion::V3_0 | RpaVersion::V3_2 => Value::Tuple(vec![
-                Value::I64(stored_offset),
-                Value::I64(stored_length),
-                Value::Bytes(entry.prefix.clone()),
-            ]),
-        };
-
-        dict.insert(
-            HashableValue::String(filename.clone()),
-            Value::List(vec![tuple]),
-        );
-    }
-
-    let pickle_value = Value::Dict(dict);
-    let pickled = serde_pickle::value_to_vec(&pickle_value, serde_pickle::SerOptions::default())
-        .map_err(|e| RpaError::PackError(format!("Pickle serialization failed: {}", e)))?;
-
-    let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
-    encoder
-        .write_all(&pickled)
-        .map_err(|e| RpaError::PackError(format!("Zlib compression failed: {}", e)))?;
-    let compressed = encoder
-        .finish()
-        .map_err(|e| RpaError::PackError(format!("Zlib compression finish failed: {}", e)))?;
-
-    Ok(compressed)
 }

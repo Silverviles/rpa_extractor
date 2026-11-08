@@ -10,10 +10,7 @@ const IMAGE_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "webp", "bmp", "gif", 
 pub enum PreviewType {
     Image,
     Text,
-    /// .rpyc file — decompile via unrpyc and show as read-only text
-    DecompiledRpyc,
     Hex,
-    None,
 }
 
 pub fn detect_preview_type(filename: &str) -> PreviewType {
@@ -25,22 +22,11 @@ pub fn detect_preview_type(filename: &str) -> PreviewType {
 
     if IMAGE_EXTENSIONS.contains(&ext.as_str()) {
         PreviewType::Image
-    } else if ext == "rpyc" {
-        PreviewType::DecompiledRpyc
     } else if TEXT_EXTENSIONS.contains(&ext.as_str()) {
         PreviewType::Text
     } else {
         PreviewType::Hex
     }
-}
-
-pub fn is_text_file(filename: &str) -> bool {
-    let ext = filename
-        .rsplit('.')
-        .next()
-        .unwrap_or("")
-        .to_lowercase();
-    TEXT_EXTENSIONS.contains(&ext.as_str())
 }
 
 pub fn build_preview_stack() -> (gtk::Stack, gtk::Picture, gtk::TextView, gtk::TextView, gtk::Label) {
@@ -62,10 +48,10 @@ pub fn build_preview_stack() -> (gtk::Stack, gtk::Picture, gtk::TextView, gtk::T
         .build();
     stack.add_named(&image_scroll, Some("image"));
 
-    // Text editor
+    // Text viewer
     let text_view = gtk::TextView::builder()
         .monospace(true)
-        .editable(true)
+        .editable(false)
         .wrap_mode(gtk::WrapMode::WordChar)
         .left_margin(8)
         .right_margin(8)
