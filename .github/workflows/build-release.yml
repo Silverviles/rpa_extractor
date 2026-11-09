@@ -1,0 +1,314 @@
+name: Build and Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      draft:
+        description: "Create the GitHub Release as a draft"
+        required: false
+        type: boolean
+        default: false
+      prerelease:
+        description: "Mark the GitHub Release as a prerelease"
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  prepare:
+    name: Determine version
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Read version from Cargo.toml
+        id: version
+        run: |
+          set -euo pipefail
+          VERSION="$(cargo metadata --locked --no-deps --format-version 1 \
+            | jq -r '.packages[] | select(.name == "rpa-editor") | .version')"
+          if [ -z "$VERSION" ] || [ "$VERSION" = "null" ]; then
+            echo "Could not determine the rpa-editor version" >&2
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Building rpa-editor v$VERSION"
+
+  build-linux:
+    name: Build Linux x86_64
+    needs: prepare
+    runs-on: ubuntu-24.04
+    env:
+      VERSION: ${{ needs.prepare.outputs.version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install GTK4 development libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-4-dev libgdk-pixbuf-2.0-dev
+
+      - name: Run tests
+        run: cargo test --workspace --locked
+
+      - name: Build release binary
+        run: cargo build --release --locked -p rpa-editor
+
+      - name: Package Linux artifact
+        run: |
+          set -euo pipefail
+          PKG="rpa-editor-${VERSION}-linux-x86_64"
+          mkdir -p "dist/$PKG"
+          cp target/release/rpa-editor "dist/$PKG/"
+          cp README.md "dist/$PKG/"
+          strip "dist/$PKG/rpa-editor"
+
+          LDD_OUTPUT="$(ldd "dist/$PKG/rpa-editor" || true)"
+          if grep -q "not found" <<< "$LDD_OUTPUT"; then
+            echo "Missing shared libraries:" >&2
+            echo "$LDD_OUTPUT" >&2
+            exit 1
+          fi
+
+          tar -C dist -czf "dist/$PKG.tar.gz" "$PKG"
+          ls -lh dist
+
+      - name: Upload Linux artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: linux-x86_64
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
+  build-windows:
+    name: Build Windows x86_64
+    needs: prepare
+    runs-on: windows-latest
+    env:
+      VERSION: ${{ needs.prepare.outputs.version }}
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup MSYS2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            zip
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-pkgconf
+            mingw-w64-ucrt-x86_64-rust
+            mingw-w64-ucrt-x86_64-binutils
+            mingw-w64-ucrt-x86_64-gtk4
+            mingw-w64-ucrt-x86_64-librsvg
+            mingw-w64-ucrt-x86_64-libwebp
+
+      - name: Build release binary
+        run: |
+          set -euo pipefail
+          cd "$(cygpath -u "$GITHUB_WORKSPACE")"
+          export PKG_CONFIG_PATH="/ucrt64/lib/pkgconfig:/ucrt64/share/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+          cargo build --release --locked -p rpa-editor
+
+      - name: Package self-contained bundle
+        run: |
+          set -euo pipefail
+          cd "$(cygpath -u "$GITHUB_WORKSPACE")"
+
+          PKG="rpa-editor-${VERSION}-windows-x86_64"
+          DIST="dist/$PKG"
+          PREFIX="/ucrt64"
+          BIN="$PREFIX/bin"
+          PBVER="$(ls -1 "$PREFIX/lib/gdk-pixbuf-2.0" | head -n1)"
+          LOADERS="$DIST/lib/gdk-pixbuf-2.0/$PBVER/loaders"
+
+          mkdir -p "$DIST/bin" "$LOADERS" \
+                   "$DIST/share/glib-2.0/schemas" \
+                   "$DIST/share/icons" \
+                   "$DIST/etc/fonts"
+
+          cp target/release/rpa-editor.exe "$DIST/bin/"
+
+          # gdk-pixbuf loaders (needed for WebP, SVG, etc.)
+          cp "$PREFIX/lib/gdk-pixbuf-2.0/$PBVER/loaders/"*.dll "$LOADERS/"
+
+          # Build a relocatable loaders.cache. Entries are relative to the
+          # bundle root so the zip works after being extracted anywhere.
+          (
+            cd "$LOADERS"
+            gdk-pixbuf-query-loaders.exe *.dll
+          ) | awk -v dir="lib/gdk-pixbuf-2.0/$PBVER/loaders" '
+            /^".*\.dll"$/ {
+              line = $0
+              gsub(/\\/, "/", line)
+              n = split(line, parts, "/")
+              file = parts[n]
+              sub(/^"/, "", file)
+              sub(/"$/, "", file)
+              print "\"" dir "/" file "\""
+              next
+            }
+            { print }
+          ' > "$DIST/lib/gdk-pixbuf-2.0/$PBVER/loaders.cache"
+
+          # Copy the DLL closure of the app and of every pixbuf loader.
+          while read -r dll; do
+            cp -n "$dll" "$DIST/bin/"
+          done < <(
+            {
+              ldd "$DIST/bin/rpa-editor.exe"
+              for loader in "$LOADERS"/*.dll; do
+                ldd "$loader"
+              done
+            } | awk '{ print $3 }' | grep -E '^/ucrt64/bin/' | sort -u || true
+          )
+
+          # A few loaders have delay-loaded dependencies that ldd does not
+          # always report (notably the SVG loader).
+          for pattern in 'libcharset-*.dll' 'libiconv-*.dll' 'librsvg-*.dll' \
+                         'libxml2-*.dll' 'libwebp*.dll' 'zlib1.dll'; do
+            for dll in "$BIN"/$pattern; do
+              if [ -f "$dll" ]; then
+                cp -n "$dll" "$DIST/bin/"
+              fi
+            done
+          done
+
+          # GLib helper executables used by some GIO/GApplication paths.
+          for helper in gdbus.exe gspawn-win64-helper.exe; do
+            if [ -f "$BIN/$helper" ]; then
+              cp "$BIN/$helper" "$DIST/bin/"
+              while read -r dll; do
+                cp -n "$dll" "$DIST/bin/"
+              done < <(
+                ldd "$BIN/$helper" | awk '{ print $3 }' \
+                  | grep -E '^/ucrt64/bin/' | sort -u || true
+              )
+            fi
+          done
+
+          # Runtime data.
+          if [ -f "$PREFIX/share/glib-2.0/schemas/gschemas.compiled" ]; then
+            cp "$PREFIX/share/glib-2.0/schemas/gschemas.compiled" \
+               "$DIST/share/glib-2.0/schemas/"
+          else
+            cp "$PREFIX/share/glib-2.0/schemas/"*.xml \
+               "$DIST/share/glib-2.0/schemas/"
+            glib-compile-schemas.exe "$DIST/share/glib-2.0/schemas/"
+          fi
+          cp -r "$PREFIX/share/icons/Adwaita" "$DIST/share/icons/"
+          if [ -d "$PREFIX/share/icons/hicolor" ]; then
+            cp -r "$PREFIX/share/icons/hicolor" "$DIST/share/icons/"
+          fi
+          if [ -d "$PREFIX/share/mime" ]; then
+            cp -r "$PREFIX/share/mime" "$DIST/share/"
+          fi
+          if [ -d "$PREFIX/etc/fonts" ]; then
+            cp -r "$PREFIX/etc/fonts/." "$DIST/etc/fonts/"
+          fi
+          gtk4-update-icon-cache.exe -q -t -f "$DIST/share/icons/Adwaita" || true
+
+          # Launcher that makes the bundled runtime unambiguous.
+          cat > "$DIST/rpa-editor.bat" <<EOF
+          @echo off
+          setlocal
+          set "APP_DIR=%~dp0"
+          set "PATH=%APP_DIR%bin;%PATH%"
+          set "XDG_DATA_DIRS=%APP_DIR%share"
+          set "GSETTINGS_SCHEMA_DIR=%APP_DIR%share\\glib-2.0\\schemas"
+          set "FONTCONFIG_PATH=%APP_DIR%etc\\fonts"
+          set "FONTCONFIG_FILE=%APP_DIR%etc\\fonts\\fonts.conf"
+          set "GDK_PIXBUF_MODULE_FILE=%APP_DIR%lib\\gdk-pixbuf-2.0\\${PBVER}\\loaders.cache"
+          start "" "%APP_DIR%bin\\rpa-editor.exe" %*
+          EOF
+          sed -i 's/$/\r/' "$DIST/rpa-editor.bat"
+
+          cat > "$DIST/RUNNING.txt" <<'EOF'
+          RPA Editor (Windows x86_64)
+          ===========================
+          Run rpa-editor.bat to start the application.
+          Alternatively run bin\rpa-editor.exe directly.
+          Keep this folder intact: the app needs the bundled GTK4 runtime.
+          EOF
+          sed -i 's/$/\r/' "$DIST/RUNNING.txt"
+
+          cp README.md "$DIST/README.md"
+
+          LDD_OUTPUT="$(PATH="$DIST/bin:$PATH" ldd "$DIST/bin/rpa-editor.exe" || true)"
+          if grep -q "not found" <<< "$LDD_OUTPUT"; then
+            echo "Missing DLLs in Windows bundle:" >&2
+            echo "$LDD_OUTPUT" >&2
+            exit 1
+          fi
+
+          ( cd dist && zip -r "$PKG.zip" "$PKG" )
+          ls -lh dist
+
+      - name: Upload Windows artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-x86_64
+          path: dist/*.zip
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub Release
+    needs: [prepare, build-linux, build-windows]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v8
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Generate checksums
+        working-directory: artifacts
+        run: |
+          set -euo pipefail
+          sha256sum *.tar.gz *.zip > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Create or update GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ needs.prepare.outputs.tag }}
+          name: RPA Editor ${{ needs.prepare.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          draft: ${{ inputs.draft }}
+          prerelease: ${{ inputs.prerelease }}
+          overwrite_files: true
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: artifacts/*

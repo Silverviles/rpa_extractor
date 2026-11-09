@@ -1,8 +1,8 @@
 use gtk::prelude::*;
 
 const TEXT_EXTENSIONS: &[&str] = &[
-    "rpy", "txt", "json", "xml", "csv", "cfg", "ini", "log", "md", "yaml", "yml",
-    "toml", "py", "html", "css", "js",
+    "rpy", "txt", "json", "xml", "csv", "cfg", "ini", "log", "md", "yaml", "yml", "toml", "py",
+    "html", "css", "js",
 ];
 
 const IMAGE_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "webp", "bmp", "gif", "tga", "svg"];
@@ -14,11 +14,7 @@ pub enum PreviewType {
 }
 
 pub fn detect_preview_type(filename: &str) -> PreviewType {
-    let ext = filename
-        .rsplit('.')
-        .next()
-        .unwrap_or("")
-        .to_lowercase();
+    let ext = filename.rsplit('.').next().unwrap_or("").to_lowercase();
 
     if IMAGE_EXTENSIONS.contains(&ext.as_str()) {
         PreviewType::Image
@@ -29,7 +25,13 @@ pub fn detect_preview_type(filename: &str) -> PreviewType {
     }
 }
 
-pub fn build_preview_stack() -> (gtk::Stack, gtk::Picture, gtk::TextView, gtk::TextView, gtk::Label) {
+pub fn build_preview_stack() -> (
+    gtk::Stack,
+    gtk::Picture,
+    gtk::TextView,
+    gtk::TextView,
+    gtk::Label,
+) {
     let stack = gtk::Stack::new();
 
     // Placeholder

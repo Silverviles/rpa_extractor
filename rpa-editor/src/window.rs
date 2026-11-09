@@ -97,7 +97,10 @@ pub fn build_window(app: &gtk::Application) -> gtk::ApplicationWindow {
         let tree_list_row = list_item.item().and_downcast::<gtk::TreeListRow>().unwrap();
         let node = tree_list_row.item().and_downcast::<FileNode>().unwrap();
 
-        let expander = list_item.child().and_downcast::<gtk::TreeExpander>().unwrap();
+        let expander = list_item
+            .child()
+            .and_downcast::<gtk::TreeExpander>()
+            .unwrap();
         expander.set_list_row(Some(&tree_list_row));
 
         let label = expander.child().and_downcast::<gtk::Label>().unwrap();
@@ -169,8 +172,7 @@ pub fn build_window(app: &gtk::Application) -> gtk::ApplicationWindow {
         .build();
 
     // Right: preview
-    let (preview_stack, picture, text_view, hex_view, info_label) =
-        preview::build_preview_stack();
+    let (preview_stack, picture, text_view, hex_view, info_label) = preview::build_preview_stack();
 
     let preview_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
     preview_box.append(&preview_stack);
@@ -359,9 +361,7 @@ pub fn build_window(app: &gtk::Application) -> gtk::ApplicationWindow {
         #[weak]
         window,
         move |_, _| {
-            let dialog = gtk::FileDialog::builder()
-                .title("Open RPA Archive")
-                .build();
+            let dialog = gtk::FileDialog::builder().title("Open RPA Archive").build();
 
             let filter = gtk::FileFilter::new();
             filter.add_pattern("*.rpa");
@@ -430,7 +430,13 @@ pub fn build_window(app: &gtk::Application) -> gtk::ApplicationWindow {
             dialog.select_folder(Some(&window), gio::Cancellable::NONE, move |result| {
                 if let Ok(folder) = result {
                     if let Some(dest) = folder.path() {
-                        do_extract(archive.clone(), filenames.clone(), dest, status.clone(), progress.clone());
+                        do_extract(
+                            archive.clone(),
+                            filenames.clone(),
+                            dest,
+                            status.clone(),
+                            progress.clone(),
+                        );
                     }
                 }
             });
@@ -464,7 +470,10 @@ pub fn build_window(app: &gtk::Application) -> gtk::ApplicationWindow {
                     .item(pos)
                     .and_then(|item| item.downcast::<gtk::TreeListRow>().ok())
                 {
-                    if let Some(node) = tree_row.item().and_then(|item| item.downcast::<FileNode>().ok()) {
+                    if let Some(node) = tree_row
+                        .item()
+                        .and_then(|item| item.downcast::<FileNode>().ok())
+                    {
                         if !node.is_directory() {
                             filenames.push(node.full_path());
                         }
@@ -486,7 +495,13 @@ pub fn build_window(app: &gtk::Application) -> gtk::ApplicationWindow {
             dialog.select_folder(Some(&window), gio::Cancellable::NONE, move |result| {
                 if let Ok(folder) = result {
                     if let Some(dest) = folder.path() {
-                        do_extract(archive.clone(), filenames.clone(), dest, status.clone(), progress.clone());
+                        do_extract(
+                            archive.clone(),
+                            filenames.clone(),
+                            dest,
+                            status.clone(),
+                            progress.clone(),
+                        );
                     }
                 }
             });

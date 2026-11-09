@@ -49,9 +49,7 @@ pub fn parse_index(
     for (key, value) in dict {
         let filename = match key {
             HashableValue::String(s) => s.replace('\0', ""),
-            HashableValue::Bytes(b) => {
-                String::from_utf8_lossy(&b).replace('\0', "")
-            }
+            HashableValue::Bytes(b) => String::from_utf8_lossy(&b).replace('\0', ""),
             _ => continue,
         };
 

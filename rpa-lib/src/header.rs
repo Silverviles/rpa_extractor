@@ -47,9 +47,7 @@ pub fn parse_header(reader: &mut impl Read) -> Result<RpaHeader, RpaError> {
     };
 
     if parts.len() < 2 {
-        return Err(RpaError::InvalidHeader(
-            "Missing index offset".to_string(),
-        ));
+        return Err(RpaError::InvalidHeader("Missing index offset".to_string()));
     }
 
     let index_offset = u64::from_str_radix(parts[1], 16)
